@@ -1,13 +1,39 @@
 -- implicit_return.lua
 -- Highlights implicit return expressions in Rust
 -- Place in ~/.config/nvim/lua/custom/implicit_return.lua
-if not pcall(require, "nvim-treesitter") then
-	vim.notify("implicit-return.nvim requires nvim-treesitter", vim.log.levels.WARN)
-	return
-end
+
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("implicit_return")
+
+-- Node types that should be highlighted as a whole unit, not recursed into
+local LEAF_TYPES = {
+	struct_expression = true,
+	tuple_expression = true,
+	call_expression = true,
+	method_call_expression = true,
+	identifier = true,
+	scoped_identifier = true,
+	integer_literal = true,
+	float_literal = true,
+	string_literal = true,
+	boolean_literal = true,
+	char_literal = true,
+	reference_expression = true,
+	unary_expression = true,
+	binary_expression = true,
+	try_expression = true,
+	await_expression = true,
+	field_expression = true,
+	index_expression = true,
+	range_expression = true,
+	closure_expression = true,
+	tuple_struct_expression = true,
+	return_expression = true,
+	break_expression = true,
+	continue_expression = true,
+	macro_invocation = true,
+}
 
 -- Forward declaration
 local get_implicit_returns
@@ -34,6 +60,21 @@ end
 get_implicit_returns = function(node, results)
 	local t = node:type()
 
+	-- Leaf types: highlight the whole node, don't recurse
+	if LEAF_TYPES[t] then
+		table.insert(results, node)
+		return
+	end
+
+	-- unwrap expression_statement and recurse
+	if t == "expression_statement" then
+		local child = node:named_child(0)
+		if child then
+			get_implicit_returns(child, results)
+		end
+		return
+	end
+
 	-- match expression: recurse into each match arm's body
 	if t == "match_expression" then
 		for i = 0, node:named_child_count() - 1 do
@@ -42,7 +83,6 @@ get_implicit_returns = function(node, results)
 				for j = 0, child:named_child_count() - 1 do
 					local arm = child:named_child(j)
 					if arm:type() == "match_arm" then
-						-- last named child of match_arm is the body
 						local body = arm:named_child(arm:named_child_count() - 1)
 						if body then
 							get_implicit_returns(body, results)
@@ -74,7 +114,7 @@ get_implicit_returns = function(node, results)
 		return
 	end
 
-	-- block: get its last expression and recurse if needed
+	-- block: get its last expression and recurse
 	if t == "block" then
 		local expr = last_expr(node)
 		if expr then
@@ -83,23 +123,14 @@ get_implicit_returns = function(node, results)
 		return
 	end
 
-	-- unwrap expression_statement and recurse
-	if t == "expression_statement" then
-		local child = node:named_child(0)
-		if child then
-			get_implicit_returns(child, results)
-		end
-		return
-	end
-
-	-- anything else is a leaf implicit return — highlight it
+	-- fallback: highlight whatever we ended up with
 	table.insert(results, node)
 end
 
 local function find_function_blocks(node, results)
 	local t = node:type()
 
-	if t == "function_item" or t == "closure_expression" then
+	if t == "function_item" then
 		for i = 0, node:child_count() - 1 do
 			local child = node:child(i)
 			if child:type() == "block" then
@@ -145,15 +176,14 @@ local function apply_highlights(bufnr)
 end
 
 local function setup_hl()
-	-- Try to read sp or fg from @keyword.return
 	local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = "@keyword.return", link = false })
-	local color = (ok and hl and (hl.sp or hl.fg)) or "#F77FBE" -- fallback to pink
-
+	local color = (ok and hl and (hl.sp or hl.fg)) or "#F77FBE"
 	vim.api.nvim_set_hl(0, "ImplicitReturn", {
 		sp = color,
 		underline = true,
 	})
 end
+
 function M.setup(opts)
 	opts = opts or {}
 	setup_hl()
