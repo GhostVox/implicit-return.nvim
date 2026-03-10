@@ -195,7 +195,7 @@ local function setup_hl()
 	-- single line: underline in return color
 	vim.api.nvim_set_hl(0, "ImplicitReturn", {
 		sp = color,
-		underline = true,
+		underdouble = true,
 	})
 	-- multi line: recolor text to return color
 	vim.api.nvim_set_hl(0, "ImplicitReturnMulti", {
