@@ -1,39 +1,13 @@
 -- implicit_return.lua
 -- Highlights implicit return expressions in Rust
 -- Place in ~/.config/nvim/lua/custom/implicit_return.lua
-
+if not pcall(require, "nvim-treesitter") then
+	vim.notify("implicit-return.nvim requires nvim-treesitter", vim.log.levels.WARN)
+	return
+end
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("implicit_return")
-
--- Node types that should be highlighted as a whole unit, not recursed into
-local LEAF_TYPES = {
-	struct_expression = true,
-	tuple_expression = true,
-	call_expression = true,
-	method_call_expression = true,
-	identifier = true,
-	scoped_identifier = true,
-	integer_literal = true,
-	float_literal = true,
-	string_literal = true,
-	boolean_literal = true,
-	char_literal = true,
-	reference_expression = true,
-	unary_expression = true,
-	binary_expression = true,
-	try_expression = true,
-	await_expression = true,
-	field_expression = true,
-	index_expression = true,
-	range_expression = true,
-	closure_expression = true,
-	tuple_struct_expression = true,
-	return_expression = true,
-	break_expression = true,
-	continue_expression = true,
-	macro_invocation = true,
-}
 
 -- Forward declaration
 local get_implicit_returns
@@ -59,22 +33,33 @@ end
 
 get_implicit_returns = function(node, results)
 	local t = node:type()
-
-	-- Leaf types: highlight the whole node, don't recurse
-	if LEAF_TYPES[t] then
-		table.insert(results, node)
-		return
-	end
-
-	-- unwrap expression_statement and recurse
-	if t == "expression_statement" then
-		local child = node:named_child(0)
-		if child then
-			get_implicit_returns(child, results)
+	-- struct expression: highlight only the field names
+	if t == "struct_expression" then
+		for i = 0, node:named_child_count() - 1 do
+			local child = node:named_child(i)
+			if child:type() == "field_initializer_list" then
+				for j = 0, child:named_child_count() - 1 do
+					local field = child:named_child(j)
+					if field:type() == "field_initializer" or field:type() == "shorthand_field_initializer" then
+						-- first named child is always the field name identifier
+						local name = field:named_child(0)
+						if name then
+							table.insert(results, name)
+						end
+					end
+				end
+			end
 		end
 		return
 	end
-
+	-- tuple expression: highlight each element individually
+	if t == "tuple_expression" then
+		for i = 0, node:named_child_count() - 1 do
+			local child = node:named_child(i)
+			table.insert(results, child)
+		end
+		return
+	end
 	-- match expression: recurse into each match arm's body
 	if t == "match_expression" then
 		for i = 0, node:named_child_count() - 1 do
@@ -114,7 +99,7 @@ get_implicit_returns = function(node, results)
 		return
 	end
 
-	-- block: get its last expression and recurse
+	-- block: get its last expression and recurse if needed
 	if t == "block" then
 		local expr = last_expr(node)
 		if expr then
@@ -123,14 +108,23 @@ get_implicit_returns = function(node, results)
 		return
 	end
 
-	-- fallback: highlight whatever we ended up with
+	-- unwrap expression_statement and recurse
+	if t == "expression_statement" then
+		local child = node:named_child(0)
+		if child then
+			get_implicit_returns(child, results)
+		end
+		return
+	end
+
+	-- anything else is a leaf implicit return — highlight it
 	table.insert(results, node)
 end
 
 local function find_function_blocks(node, results)
 	local t = node:type()
 
-	if t == "function_item" then
+	if t == "function_item" or t == "closure_expression" then
 		for i = 0, node:child_count() - 1 do
 			local child = node:child(i)
 			if child:type() == "block" then
@@ -167,20 +161,45 @@ local function apply_highlights(bufnr)
 
 	for _, node in ipairs(results) do
 		local sr, sc, er, ec = node:range()
-		vim.api.nvim_buf_set_extmark(bufnr, ns, sr, sc, {
-			end_row = er,
-			end_col = ec,
-			hl_group = "ImplicitReturn",
-		})
+		if sr == er then
+			-- single line: underline the whole thing
+			vim.api.nvim_buf_set_extmark(bufnr, ns, sr, sc, {
+				end_row = er,
+				end_col = ec,
+				hl_group = "ImplicitReturn",
+			})
+		else
+			-- multi line: recolor each line, skipping bare brackets
+			for row = sr, er do
+				local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1]
+				if line then
+					local trimmed = line:match("^%s*(.-)%s*$")
+					if trimmed ~= "{" and trimmed ~= "}" and trimmed ~= "(" and trimmed ~= ")" and trimmed ~= "" then
+						local start_col = #line:match("^(%s*)")
+						vim.api.nvim_buf_set_extmark(bufnr, ns, row, start_col, {
+							end_row = row,
+							end_col = #line,
+							hl_group = "ImplicitReturnMulti",
+						})
+					end
+				end
+			end
+		end
 	end
 end
 
 local function setup_hl()
 	local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = "@keyword.return", link = false })
 	local color = (ok and hl and (hl.sp or hl.fg)) or "#F77FBE"
+
+	-- single line: underline in return color
 	vim.api.nvim_set_hl(0, "ImplicitReturn", {
 		sp = color,
 		underline = true,
+	})
+	-- multi line: recolor text to return color
+	vim.api.nvim_set_hl(0, "ImplicitReturnMulti", {
+		fg = color,
 	})
 end
 
@@ -190,6 +209,9 @@ function M.setup(opts)
 
 	if opts.hl then
 		vim.api.nvim_set_hl(0, "ImplicitReturn", opts.hl)
+	end
+	if opts.hl_multi then
+		vim.api.nvim_set_hl(0, "ImplicitReturnMulti", opts.hl_multi)
 	end
 
 	local group = vim.api.nvim_create_augroup("ImplicitReturn", { clear = true })
